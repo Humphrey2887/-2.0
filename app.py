@@ -550,70 +550,57 @@ def create_forecast_chart_with_ci(
     return fig
 
 
-def create_sensitivity_heatmap(
-    sensitivity_matrix: np.ndarray,
-    target_year: int = 2028
-) -> tuple:
-    """Create sensitivity heatmap - Microscope Mode | 创建敏感性热力图 - 显微镜模式"""
-    subsidy_labels = [str(i) for i in range(11)]
-    growth_labels = [f"{i}%" for i in range(11)]
+def create_sensitivity_heatmap(sensitivity_matrix, target_year):
+    """
+    Generate a heatmap figure with dynamic range scaling (Microscope Mode).
+    """
+    import plotly.graph_objects as go
+    import numpy as np
     
-    z_min = np.min(sensitivity_matrix)
-    z_max = np.max(sensitivity_matrix)
+    # 1. Calculate dynamic range (Microscope Mode)
+    # Convert to native Python floats to avoid Plotly serialization errors
+    z_min = float(np.min(sensitivity_matrix))
+    z_max = float(np.max(sensitivity_matrix))
     z_delta = z_max - z_min
     
-    if z_delta < 0.0001:
-        z_min -= 0.001
-        z_max += 0.001
-        z_delta = z_max - z_min
-    
+    # Define axes labels (based on your simulation range)
+    # Assuming 0-10 for Subsidy (X) and 0%-10% for Reshoring (Y) as per previous logic
+    x_values = list(range(11))  # 0 to 10
+    y_values = [f"{i}%" for i in range(11)]  # 0% to 10%
+
+    # 2. Create Heatmap
     fig = go.Figure(data=go.Heatmap(
         z=sensitivity_matrix,
-        x=subsidy_labels,
-        y=growth_labels,
-        colorscale='Viridis',
+        x=x_values,
+        y=y_values,
+        
+        # Force the color scale to fit the data exactly (High Contrast)
         zmin=z_min,
         zmax=z_max,
         zauto=False,
+        
+        colorscale='Viridis',  # High contrast color scale
+        
+        # High precision text display
+        texttemplate="%{z:.3f}",
+        hovertemplate="<b>Subsidy:</b> %{x}<br><b>Growth:</b> %{y}<br><b>Usage:</b> %{z:.4f} Quads<extra></extra>",
+        
+        # simplified colorbar to prevent ValueError
         colorbar=dict(
-            title=f'{target_year}<br>Renewable<br>可再生能源<br>(Q BTU)',
-            titleside='right',
-            tickformat='.3f'
-        ),
-        hovertemplate=(
-            '<b>Subsidy Index | 补贴指数</b>: %{x}<br>'
-            '<b>Growth Rate | 增长率</b>: %{y}<br>'
-            '<b>Renewable | 可再生能源</b>: %{z:.5f} Q BTU<br>'
-            '<extra></extra>'
+            title=f"Usage in {target_year} (Quads)",
+            title_side="right"
         )
     ))
-    
-    for i in range(sensitivity_matrix.shape[0]):
-        for j in range(sensitivity_matrix.shape[1]):
-            value = sensitivity_matrix[i, j]
-            relative_pos = (value - z_min) / z_delta if z_delta > 0 else 0.5
-            text_color = 'white' if relative_pos < 0.5 else 'black'
-            
-            fig.add_annotation(
-                x=j, y=i,
-                text=f"{value:.2f}",
-                showarrow=False,
-                font=dict(size=8, color=text_color)
-            )
-    
+
+    # 3. Layout Polish
     fig.update_layout(
-        title=dict(
-            text=f'<b>🔬 Policy vs Growth Sensitivity | 政策与增长敏感性分析 (Microscope Mode | 显微镜模式)</b><br>'
-                 f'<sup>{target_year} Renewable Forecast | 可再生能源预测值 | Color Range Optimized | 颜色范围已优化</sup>',
-            x=0.5,
-            font=dict(size=16)
-        ),
-        xaxis_title='Green Subsidy Index | 绿色补贴指数',
-        yaxis_title='Industrial Reshoring Growth | 工业回流增长率',
-        template='plotly_white',
-        height=500
+        title=f"Sensitivity Analysis: Renewable Energy Usage in {target_year} | 敏感性分析",
+        xaxis_title="Green Subsidy Index (0-10) | 绿色补贴力度",
+        yaxis_title="Industrial Reshoring Growth (%) | 制造业回流增速",
+        height=600,
+        width=800
     )
-    
+
     return fig, z_min, z_max, z_delta
 
 
