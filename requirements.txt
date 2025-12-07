@@ -1,0 +1,22 @@
+# US Energy Consumption Forecasting - Dependencies
+# Python 3.8+ recommended
+
+# Core Data Processing
+pandas>=1.5.0
+numpy>=1.21.0
+
+# Machine Learning
+xgboost>=1.7.0
+scikit-learn>=1.0.0
+
+# Web Application
+streamlit>=1.28.0
+
+# Visualization
+plotly>=5.15.0
+
+# Data Fetching
+pandas-datareader>=0.10.0
+
+# Optional: for better date handling
+python-dateutil>=2.8.0
