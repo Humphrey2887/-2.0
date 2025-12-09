@@ -3,6 +3,6 @@ pandas
 numpy
 plotly
 scikit-learn
-xgboost
+xgboost==1.7.6
 shap
 matplotlib
