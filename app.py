@@ -1,12 +1,12 @@
 """
-US Energy Consumption Forecast | 美国能源消费预测 - app.py (Pro Bilingual Version)
+US Energy Consumption Forecast | 美国能源消费预测 - app.py (Static Data Version)
 XGBoost Forecasting for Trump 2.0 Scenario | XGBoost预测 Trump 2.0情景分析
 
 Pro Features | 专业版功能:
-1. Uncertainty Quantification | 不确定性量化 (Confidence Intervals | 置信区间)
-2. Policy Lag Effects | 政策滞后效应 (2-Year Transmission | 2年传导)
-3. Sensitivity Analysis Heatmap | 敏感性分析热力图
-4. Energy Intensity Feature | 能源强度特征
+1. No External API Dependency | 无需外部API (内置真实历史数据，防止网络报错)
+2. Uncertainty Quantification | 不确定性量化
+3. Policy Lag Effects | 政策滞后效应
+4. Sensitivity Analysis | 敏感性分析
 """
 
 import streamlit as st
@@ -16,8 +16,6 @@ import plotly.graph_objects as go
 from xgboost import XGBRegressor
 from sklearn.metrics import mean_squared_error
 import warnings
-import urllib.request
-from io import StringIO
 
 # 忽略警告信息
 warnings.filterwarnings('ignore')
@@ -45,94 +43,45 @@ def load_manual_data(filepath: str = "manual_data.csv") -> pd.DataFrame:
         st.stop()
 
 
-@st.cache_data(ttl=3600)
-def fetch_fred_data(start_year: int = 2000, end_year: int = 2024) -> pd.DataFrame:
+@st.cache_data
+def get_static_macro_data() -> pd.DataFrame:
     """
-    Fetch macro data directly from FRED CSV API | 直接从FRED官网获取宏观经济数据
-    (Uses urllib with Browser Headers to bypass anti-bot blocking | 伪装浏览器头以绕过拦截)
+    Returns embedded REAL historical macro data (2000-2023).
+    Bypasses FRED API blocking issues completely.
+    返回内置的真实历史宏观数据，彻底解决API被墙的问题。
     """
-    try:
-        # FRED Series IDs
-        series_map = {
-            'GDP': 'GDP',                # Gross Domestic Product
-            'Industrial_Reshoring': 'INDPRO',   # Industrial Production Index
-            'Oil_Price': 'DCOILWTICO'    # Crude Oil Price
-        }
-        
-        macro_data = {}
-        fetch_success = False # 标记是否至少成功获取了一个数据
-        
-        for name, series_id in series_map.items():
-            try:
-                # 1. 构建 CSV 下载链接
-                url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
-                
-                # 2. 关键步骤：伪装成浏览器 (User-Agent)
-                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-                req = urllib.request.Request(url, headers=headers)
-                
-                # 3. 下载并读取数据
-                with urllib.request.urlopen(req) as response:
-                    csv_content = response.read().decode('utf-8')
-                
-                # 4. 解析 CSV
-                data = pd.read_csv(StringIO(csv_content), index_col='DATE', parse_dates=True)
-                
-                # 5. 筛选与重采样
-                data = data[data.index.year >= start_year]
-                annual_data = data.resample('YE').mean()
-                annual_data.index = annual_data.index.year
-                
-                macro_data[name] = annual_data[series_id]
-                fetch_success = True
-                
-            except Exception as e:
-                # 仅在后台记录警告，不中断程序
-                print(f"Warning: Cannot fetch {name}: {e}")
-                macro_data[name] = None
-        
-        # 如果所有数据都获取失败，抛出异常以触发模拟数据
-        if not fetch_success:
-            raise ValueError("All FRED downloads failed (Blocked or Network Error)")
-
-        # 合并数据
-        df = pd.DataFrame(macro_data)
-        df.index.name = 'Year'
-        df = df.reset_index()
-        
-        # 再次检查是否有全空列
-        if df['GDP'].isnull().all():
-             raise ValueError("GDP data is empty")
-            
-        return df
-        
-    except Exception as e:
-        st.warning(f"Using Mock Data (Network/FRED Issue) | 使用模拟数据: {e}")
-        return generate_mock_macro_data(start_year, end_year)
-
-
-def generate_mock_macro_data(start_year: int, end_year: int) -> pd.DataFrame:
-    """Generate mock macro data | 生成模拟宏观数据"""
-    np.random.seed(42)
-    years = list(range(start_year, end_year + 1))
-    n = len(years)
+    data = {
+        'Year': list(range(2000, 2024)),
+        # 真实美国GDP数据 (Billions USD) - Source: FRED/WorldBank
+        'GDP': [
+            10252, 10581, 10936, 11458, 12213, 13036, 13814, 14451, 14712, 14448, 
+            14992, 15542, 16197, 16784, 17521, 18219, 18707, 19485, 20527, 21372, 
+            20893, 22996, 25462, 27360
+        ],
+        # 真实工业产出指数 (INDPRO, 2017=100) - Source: FRED
+        'Industrial_Reshoring': [
+            92.8, 89.4, 89.7, 90.9, 93.3, 96.5, 98.6, 100.0, 96.3, 85.0, 
+            90.6, 93.6, 96.6, 98.4, 101.3, 100.6, 99.4, 100.0, 103.1, 102.4, 
+            95.4, 100.4, 103.7, 103.0
+        ],
+        # 真实WTI原油价格 (DCOILWTICO) - Source: FRED
+        'Oil_Price': [
+            30.3, 25.9, 26.1, 31.1, 41.4, 56.5, 66.1, 72.3, 99.6, 61.7, 
+            79.4, 94.8, 94.1, 97.9, 93.1, 48.7, 43.2, 50.8, 65.2, 56.9, 
+            39.2, 68.1, 94.4, 77.6
+        ]
+    }
     
-    base_gdp = 10000
-    gdp_growth = np.cumsum(np.random.normal(500, 200, n))
-    gdp = base_gdp + gdp_growth
+    df = pd.DataFrame(data)
+    # 简单插值到2024 (假设值，避免缺失)
+    last_row = df.iloc[-1].copy()
+    last_row['Year'] = 2024
+    last_row['GDP'] = last_row['GDP'] * 1.025 # 2.5% growth estimate
+    last_row['Industrial_Reshoring'] = last_row['Industrial_Reshoring'] * 1.01
+    last_row['Oil_Price'] = 78.0 # 2024 estimate
     
-    industrial = 90 + np.cumsum(np.random.normal(1.5, 1, n))
-    
-    oil_base = 30
-    oil_prices = oil_base + 40 * np.sin(np.linspace(0, 4*np.pi, n)) + np.random.normal(0, 10, n)
-    oil_prices = np.clip(oil_prices, 20, 150)
-    
-    return pd.DataFrame({
-        'Year': years,
-        'GDP': gdp,
-        'Industrial_Reshoring': industrial,
-        'Oil_Price': oil_prices
-    })
+    df = pd.concat([df, pd.DataFrame([last_row])], ignore_index=True)
+    return df
 
 
 def merge_all_data(manual_df: pd.DataFrame, macro_df: pd.DataFrame) -> pd.DataFrame:
@@ -571,7 +520,8 @@ def main():
     # Execution
     with st.spinner("Loading Data..."):
         manual_df = load_manual_data()
-        macro_df = fetch_fred_data() # Updated robust fetcher
+        # 🟢 CRITICAL CHANGE: Using static data to avoid FRED blocking
+        macro_df = get_static_macro_data() 
         merged_df = merge_all_data(manual_df, macro_df)
         df = create_lag_features(merged_df)
     
