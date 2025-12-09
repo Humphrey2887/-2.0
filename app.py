@@ -1,10 +1,11 @@
 """
-US Energy Consumption Forecast | 美国能源消费预测 - app.py (Auto-Load Sensitivity Version)
-XGBoost Forecasting for Trump 2.0 Scenario | XGBoost预测 Trump 2.0情景分析
+US Energy Consumption Forecast | 美国能源消费预测 - app.py (Ultimate Version)
+XGBoost Forecasting for Trump 2.0 vs Baseline
 
 Updates:
-- Sensitivity Analysis now runs automatically on page load (No button required).
-- 敏感性分析现在会自动运行，无需点击按钮。
+1. CO2 Emission Forecasting | 碳排放预测
+2. Baseline Comparison (Biden/Harris Continuity) | 基准情景对比
+3. Scenario Delta Analysis | 情景差异分析 (替代复杂的SHAP，更直观)
 """
 
 import streamlit as st
@@ -20,7 +21,7 @@ warnings.filterwarnings('ignore')
 
 # Page Configuration | 页面配置
 st.set_page_config(
-    page_title="Energy Forecast | 能源预测",
+    page_title="Energy Forecast Pro | 能源决策系统",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -32,108 +33,83 @@ st.set_page_config(
 
 @st.cache_data
 def load_manual_data(filepath: str = "manual_data.csv") -> pd.DataFrame:
-    """Load processed manual data | 加载处理后的手动数据"""
+    """Load processed manual data"""
     try:
         df = pd.read_csv(filepath)
         return df
     except FileNotFoundError:
-        st.error(f"File not found | 找不到文件: {filepath}. Please run process_data.py first | 请先运行 process_data.py")
+        st.error(f"File not found: {filepath}. Please run process_data.py first.")
         st.stop()
-
 
 @st.cache_data
 def get_static_macro_data() -> pd.DataFrame:
-    """
-    Returns embedded REAL historical macro data (2000-2023).
-    Bypasses FRED API blocking issues completely.
-    """
+    """Returns embedded REAL historical macro data (2000-2023)."""
     data = {
         'Year': list(range(2000, 2024)),
-        # 真实美国GDP数据 (Billions USD)
         'GDP': [
             10252, 10581, 10936, 11458, 12213, 13036, 13814, 14451, 14712, 14448, 
             14992, 15542, 16197, 16784, 17521, 18219, 18707, 19485, 20527, 21372, 
             20893, 22996, 25462, 27360
         ],
-        # 真实工业产出指数 (INDPRO, 2017=100)
         'Industrial_Reshoring': [
             92.8, 89.4, 89.7, 90.9, 93.3, 96.5, 98.6, 100.0, 96.3, 85.0, 
             90.6, 93.6, 96.6, 98.4, 101.3, 100.6, 99.4, 100.0, 103.1, 102.4, 
             95.4, 100.4, 103.7, 103.0
         ],
-        # 真实WTI原油价格 (DCOILWTICO)
         'Oil_Price': [
             30.3, 25.9, 26.1, 31.1, 41.4, 56.5, 66.1, 72.3, 99.6, 61.7, 
             79.4, 94.8, 94.1, 97.9, 93.1, 48.7, 43.2, 50.8, 65.2, 56.9, 
             39.2, 68.1, 94.4, 77.6
         ]
     }
-    
     df = pd.DataFrame(data)
-    # 简单插值到2024
+    # Simple interpolation for 2024
     last_row = df.iloc[-1].copy()
     last_row['Year'] = 2024
     last_row['GDP'] = last_row['GDP'] * 1.025
     last_row['Industrial_Reshoring'] = last_row['Industrial_Reshoring'] * 1.01
     last_row['Oil_Price'] = 78.0
-    
     df = pd.concat([df, pd.DataFrame([last_row])], ignore_index=True)
     return df
 
-
 @st.cache_data
 def merge_all_data(manual_df: pd.DataFrame, macro_df: pd.DataFrame) -> pd.DataFrame:
-    """Merge manual and macro data | 合并手动数据与宏观数据"""
+    """Merge data"""
     manual_df['Year'] = manual_df['Year'].astype(int)
     macro_df['Year'] = macro_df['Year'].astype(int)
-    
     df = pd.merge(manual_df, macro_df, on='Year', how='inner')
-    
     numeric_cols = df.select_dtypes(include=[np.number]).columns
-    df[numeric_cols] = df[numeric_cols].interpolate(method='linear')
-    df[numeric_cols] = df[numeric_cols].ffill().bfill()
-    
+    df[numeric_cols] = df[numeric_cols].interpolate(method='linear').ffill().bfill()
     return df
-
 
 @st.cache_data
 def create_lag_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Create features | 创建特征"""
+    """Create features"""
     df = df.copy()
     df = df.sort_values('Year').reset_index(drop=True)
-    
     df['Year_Index'] = df['Year'] - 2000
-    df['Year_Index'] = df['Year_Index'].astype(int)
-    
     df['Fossil_Lag1'] = df['Fossil_Usage'].shift(1)
     df['Renewable_Lag1'] = df['Renewable_Usage'].shift(1)
-    
     df['Green_Subsidy_Lag2'] = df['Green_Subsidy_Index'].shift(2)
-    
     df['Total_Energy'] = df['Fossil_Usage'] + df['Renewable_Usage']
     df['Energy_Intensity'] = df['Total_Energy'] / df['GDP']
     df['Energy_Intensity_Lag1'] = df['Energy_Intensity'].shift(1)
-    
     df['Fossil_Diff'] = df['Fossil_Usage'] - df['Fossil_Usage'].shift(1)
     df['Renewable_Diff'] = df['Renewable_Usage'] - df['Renewable_Usage'].shift(1)
-    
     df = df.dropna().reset_index(drop=True)
-    
     return df
 
-
 # ============================================
-# Model Training (Cached for Speed) | 模型训练(缓存加速)
+# Model Training (Cached) | 模型训练
 # ============================================
 
 @st.cache_resource
 def train_models(df: pd.DataFrame) -> tuple:
-    """Train XGBoost models | 训练模型"""
+    """Train XGBoost models"""
     feature_cols = ['GDP', 'Industrial_Reshoring', 'Oil_Price', 
                     'LCOE_Advantage', 'Green_Subsidy_Index', 
-                    'Green_Subsidy_Lag2',
-                    'Permitting_Ease', 'Trade_Barrier', 'Year_Index',
-                    'Energy_Intensity_Lag1']
+                    'Green_Subsidy_Lag2', 'Permitting_Ease', 
+                    'Trade_Barrier', 'Year_Index', 'Energy_Intensity_Lag1']
     
     fossil_features = feature_cols + ['Fossil_Lag1']
     X_fossil = df[fossil_features]
@@ -144,14 +120,9 @@ def train_models(df: pd.DataFrame) -> tuple:
     y_renewable = df['Renewable_Diff']
     
     xgb_params = {
-        'n_estimators': 100,
-        'max_depth': 4,
-        'learning_rate': 0.1,
-        'subsample': 0.8,
-        'colsample_bytree': 0.8,
-        'random_state': 42,
-        'objective': 'reg:squarederror',
-        'n_jobs': 1
+        'n_estimators': 100, 'max_depth': 4, 'learning_rate': 0.1,
+        'subsample': 0.8, 'colsample_bytree': 0.8, 'random_state': 42,
+        'objective': 'reg:squarederror', 'n_jobs': 1
     }
     
     fossil_model = XGBRegressor(**xgb_params)
@@ -160,47 +131,43 @@ def train_models(df: pd.DataFrame) -> tuple:
     renewable_model = XGBRegressor(**xgb_params)
     renewable_model.fit(X_renewable, y_renewable)
     
-    fossil_pred_train = fossil_model.predict(X_fossil)
-    fossil_rmse = np.sqrt(mean_squared_error(y_fossil, fossil_pred_train))
+    fossil_pred = fossil_model.predict(X_fossil)
+    renewable_pred = renewable_model.predict(X_renewable)
     
-    renewable_pred_train = renewable_model.predict(X_renewable)
-    renewable_rmse = np.sqrt(mean_squared_error(y_renewable, renewable_pred_train))
+    f_rmse = np.sqrt(mean_squared_error(y_fossil, fossil_pred))
+    r_rmse = np.sqrt(mean_squared_error(y_renewable, renewable_pred))
     
-    return (fossil_model, renewable_model, fossil_features, renewable_features,
-            fossil_rmse, renewable_rmse)
-
+    return (fossil_model, renewable_model, fossil_features, renewable_features, f_rmse, r_rmse)
 
 def recursive_forecast(
-    fossil_model, renewable_model,
-    fossil_features, renewable_features,
-    last_row, historical_df,
-    scenario_params, forecast_years,
+    fossil_model, renewable_model, fossil_features, renewable_features,
+    last_row, historical_df, scenario_params, forecast_years,
     fossil_rmse, renewable_rmse
 ) -> pd.DataFrame:
-    """Recursive forecasting | 递归预测"""
+    """Recursive forecasting with CO2 Logic"""
     predictions = []
     
     current_fossil = last_row['Fossil_Usage']
     current_renewable = last_row['Renewable_Usage']
-    
-    fossil_lag = last_row['Fossil_Usage']
-    renewable_lag = last_row['Renewable_Usage']
+    fossil_lag = current_fossil
+    renewable_lag = current_renewable
     
     current_year_index = int(last_row['Year_Index'])
-    
     last_gdp = last_row['GDP']
     last_industrial = last_row['Industrial_Reshoring']
     last_oil = last_row['Oil_Price']
-    
     current_intensity_lag = last_row['Energy_Intensity']
     
     historical_subsidy = historical_df.set_index('Year')['Green_Subsidy_Index'].to_dict()
     forecast_subsidy = {year: scenario_params['green_subsidy'] for year in forecast_years}
     all_subsidy = {**historical_subsidy, **forecast_subsidy}
     
+    # CO2 Parameters
+    # Approx 53 kg CO2/MMBtu base, improving slightly over time
+    carbon_intensity_base = 53.0
+    
     for i, year in enumerate(forecast_years):
         current_year_index += 1
-        
         current_gdp = last_gdp * (1 + scenario_params['gdp_growth_rate'] / 100)
         current_industrial = last_industrial * (1 + scenario_params['industrial_growth_rate'] / 100)
         current_oil = last_oil * (1 + scenario_params['oil_price_change'] / 100)
@@ -212,10 +179,8 @@ def recursive_forecast(
         green_subsidy_lag2 = all_subsidy.get(lag2_year, scenario_params['green_subsidy'])
         
         feature_base = {
-            'GDP': current_gdp,
-            'Industrial_Reshoring': current_industrial,
-            'Oil_Price': current_oil,
-            'LCOE_Advantage': current_lcoe,
+            'GDP': current_gdp, 'Industrial_Reshoring': current_industrial,
+            'Oil_Price': current_oil, 'LCOE_Advantage': current_lcoe,
             'Green_Subsidy_Index': scenario_params['green_subsidy'],
             'Green_Subsidy_Lag2': green_subsidy_lag2,
             'Permitting_Ease': scenario_params['permitting_ease'],
@@ -224,36 +189,36 @@ def recursive_forecast(
             'Energy_Intensity_Lag1': current_intensity_lag
         }
         
-        fossil_input = feature_base.copy()
-        fossil_input['Fossil_Lag1'] = fossil_lag
-        X_fossil = pd.DataFrame([fossil_input])[fossil_features]
-        fossil_diff_pred = fossil_model.predict(X_fossil)[0]
-        fossil_value = current_fossil + fossil_diff_pred
+        # Fossil Prediction
+        f_input = feature_base.copy()
+        f_input['Fossil_Lag1'] = fossil_lag
+        f_diff = fossil_model.predict(pd.DataFrame([f_input])[fossil_features])[0]
+        fossil_value = current_fossil + f_diff
         
-        renewable_input = feature_base.copy()
-        renewable_input['Renewable_Lag1'] = renewable_lag
-        X_renewable = pd.DataFrame([renewable_input])[renewable_features]
-        renewable_diff_pred = renewable_model.predict(X_renewable)[0]
-        renewable_value = current_renewable + renewable_diff_pred
+        # Renewable Prediction
+        r_input = feature_base.copy()
+        r_input['Renewable_Lag1'] = renewable_lag
+        r_diff = renewable_model.predict(pd.DataFrame([r_input])[renewable_features])[0]
+        renewable_value = current_renewable + r_diff
         
-        fossil_cumulative_std = fossil_rmse * np.sqrt(i + 1)
-        renewable_cumulative_std = renewable_rmse * np.sqrt(i + 1)
+        # Uncertainty
+        f_std = fossil_rmse * np.sqrt(i + 1)
+        r_std = renewable_rmse * np.sqrt(i + 1)
         
-        fossil_upper = fossil_value + 1.96 * fossil_cumulative_std
-        fossil_lower = fossil_value - 1.96 * fossil_cumulative_std
-        renewable_upper = renewable_value + 1.96 * renewable_cumulative_std
-        renewable_lower = renewable_value - 1.96 * renewable_cumulative_std
+        # CO2 Calculation (New Logic)
+        # Usage (Q BTU) * Intensity * Efficiency Factor
+        efficiency = 0.995 ** (i + 1) # Assumed efficiency gain
+        co2_emission = fossil_value * carbon_intensity_base * efficiency 
         
         predictions.append({
             'Year': year,
             'Fossil_Usage': fossil_value,
-            'Fossil_Upper': fossil_upper,
-            'Fossil_Lower': fossil_lower,
+            'Fossil_Upper': fossil_value + 1.96 * f_std,
+            'Fossil_Lower': fossil_value - 1.96 * f_std,
             'Renewable_Usage': renewable_value,
-            'Renewable_Upper': renewable_upper,
-            'Renewable_Lower': renewable_lower,
-            'GDP': current_gdp,
-            'Year_Index': current_year_index
+            'Renewable_Upper': renewable_value + 1.96 * r_std,
+            'Renewable_Lower': renewable_value - 1.96 * r_std,
+            'CO2_Emissions': co2_emission
         })
         
         current_fossil = fossil_value
@@ -263,306 +228,163 @@ def recursive_forecast(
         last_gdp = current_gdp
         last_industrial = current_industrial
         last_oil = current_oil
-        
-        total_energy_pred = fossil_value + renewable_value
-        current_intensity_lag = total_energy_pred / current_gdp
+        current_intensity_lag = (fossil_value + renewable_value) / current_gdp
     
     return pd.DataFrame(predictions)
 
-
 # ============================================
-# Visualization | 可视化
+# Visualization Helpers | 可视化辅助
 # ============================================
 
-def create_forecast_chart_with_ci(historical_df, forecast_df, energy_type='both'):
-    """Create chart | 创建图表"""
+def create_comparison_chart(hist_df, trump_df, baseline_df):
+    """Create chart comparing Trump vs Baseline"""
     fig = go.Figure()
     
-    colors = {
-        'fossil_hist': '#8B4513', 'fossil_pred': '#D2691E', 'fossil_ci': 'rgba(210, 105, 30, 0.2)',
-        'renewable_hist': '#228B22', 'renewable_pred': '#32CD32', 'renewable_ci': 'rgba(50, 205, 50, 0.2)'
-    }
+    # Historical
+    fig.add_trace(go.Scatter(
+        x=hist_df['Year'], y=hist_df['Renewable_Usage'],
+        name='Historical (历史)', line=dict(color='black', width=2)
+    ))
     
-    last_hist_year = historical_df['Year'].max()
-    forecast_x = [last_hist_year] + forecast_df['Year'].tolist()
+    # Trump Scenario
+    fig.add_trace(go.Scatter(
+        x=trump_df['Year'], y=trump_df['Renewable_Usage'],
+        name='Trump 2.0 Scenario', line=dict(color='#FF4B4B', width=3)
+    ))
     
-    if energy_type in ['fossil', 'both']:
-        # Fossil Logic
-        fig.add_trace(go.Scatter(
-            x=historical_df['Year'], y=historical_df['Fossil_Usage'],
-            mode='lines+markers', name='Fossil (Historical)',
-            line=dict(color=colors['fossil_hist'], width=2)
-        ))
-        
-        last_val = historical_df[historical_df['Year'] == last_hist_year]['Fossil_Usage'].values[0]
-        upper_y = [last_val] + forecast_df['Fossil_Upper'].tolist()
-        lower_y = [last_val] + forecast_df['Fossil_Lower'].tolist()
-        pred_y = [last_val] + forecast_df['Fossil_Usage'].tolist()
-        
-        fig.add_trace(go.Scatter(
-            x=forecast_x, y=upper_y, mode='lines', line=dict(width=0), showlegend=False, hoverinfo='skip'
-        ))
-        fig.add_trace(go.Scatter(
-            x=forecast_x, y=lower_y, mode='lines', line=dict(width=0), fill='tonexty',
-            fillcolor=colors['fossil_ci'], name='Fossil 95% CI', hoverinfo='skip'
-        ))
-        fig.add_trace(go.Scatter(
-            x=forecast_x, y=pred_y, mode='lines+markers', name='Fossil (Forecast)',
-            line=dict(color=colors['fossil_pred'], width=2, dash='dash')
-        ))
-    
-    if energy_type in ['renewable', 'both']:
-        # Renewable Logic
-        fig.add_trace(go.Scatter(
-            x=historical_df['Year'], y=historical_df['Renewable_Usage'],
-            mode='lines+markers', name='Renewable (Historical)',
-            line=dict(color=colors['renewable_hist'], width=2)
-        ))
-        
-        last_val = historical_df[historical_df['Year'] == last_hist_year]['Renewable_Usage'].values[0]
-        upper_y = [last_val] + forecast_df['Renewable_Upper'].tolist()
-        lower_y = [last_val] + forecast_df['Renewable_Lower'].tolist()
-        pred_y = [last_val] + forecast_df['Renewable_Usage'].tolist()
-        
-        fig.add_trace(go.Scatter(
-            x=forecast_x, y=upper_y, mode='lines', line=dict(width=0), showlegend=False, hoverinfo='skip'
-        ))
-        fig.add_trace(go.Scatter(
-            x=forecast_x, y=lower_y, mode='lines', line=dict(width=0), fill='tonexty',
-            fillcolor=colors['renewable_ci'], name='Renewable 95% CI', hoverinfo='skip'
-        ))
-        fig.add_trace(go.Scatter(
-            x=forecast_x, y=pred_y, mode='lines+markers', name='Renewable (Forecast)',
-            line=dict(color=colors['renewable_pred'], width=2, dash='dash')
-        ))
-    
-    fig.add_vline(x=last_hist_year, line_dash="dot", line_color="gray")
-    fig.update_layout(
-        title='<b>US Energy Forecast | 美国能源预测</b>',
-        xaxis_title='Year', yaxis_title='Energy (Q BTU)',
-        template='plotly_white', height=550
-    )
-    return fig
-
-
-def create_sensitivity_heatmap(sensitivity_matrix, target_year):
-    """Create heatmap | 创建热力图"""
-    z_min = float(np.min(sensitivity_matrix))
-    z_max = float(np.max(sensitivity_matrix))
-    z_delta = z_max - z_min
-    
-    x_values = list(range(11))
-    y_values = [f"{i}%" for i in range(11)]
-    
-    fig = go.Figure(data=go.Heatmap(
-        z=sensitivity_matrix, x=x_values, y=y_values,
-        zmin=z_min, zmax=z_max, colorscale='Viridis',
-        texttemplate="%{z:.3f}", hovertemplate="Subsidy: %{x}<br>Growth: %{y}<br>Usage: %{z:.4f}<extra></extra>"
+    # Baseline Scenario
+    fig.add_trace(go.Scatter(
+        x=baseline_df['Year'], y=baseline_df['Renewable_Usage'],
+        name='Baseline (Status Quo)', line=dict(color='#0068C9', width=3, dash='dot')
     ))
     
     fig.update_layout(
-        title=f"Sensitivity Analysis {target_year} | 敏感性分析",
-        xaxis_title="Green Subsidy Index | 补贴指数",
-        yaxis_title="Industrial Growth (%) | 工业增长率",
-        height=600
+        title="Scenario Comparison: Renewable Energy | 情景对比：可再生能源",
+        yaxis_title="Energy (Q BTU)",
+        template='plotly_white', height=500
     )
-    return fig, z_min, z_max, z_delta
-
-
-def create_feature_importance_chart(fossil_model, renewable_model, feature_names):
-    """Create feature importance chart | 创建特征重要性图表"""
-    base_features = [f for f in feature_names if 'Lag' not in f]
-    n_base = len(base_features)
-    
-    fossil_imp = fossil_model.feature_importances_[:n_base]
-    renewable_imp = renewable_model.feature_importances_[:n_base]
-    
-    fig = go.Figure()
-    fig.add_trace(go.Bar(name='Fossil Model', x=base_features, y=fossil_imp, marker_color='#8B4513'))
-    fig.add_trace(go.Bar(name='Renewable Model', x=base_features, y=renewable_imp, marker_color='#228B22'))
-    
-    fig.update_layout(title='Feature Importance | 特征重要性', barmode='group', template='plotly_white', height=400)
     return fig
 
-
-# ============================================
-# Sensitivity Analysis Logic (Cached) | 敏感性分析逻辑
-# ============================================
-
-@st.cache_data
-def calculate_sensitivity(
-    _fossil_model, _renewable_model,
-    _fossil_features, _renewable_features,
-    _last_row_tuple, _historical_subsidy_tuple,
-    base_scenario, target_year=2028
-) -> np.ndarray:
-    """Calculate sensitivity matrix | 计算敏感性分析矩阵"""
-    last_row_dict = dict(_last_row_tuple)
-    historical_subsidy = dict(_historical_subsidy_tuple)
-    renewable_features = list(_renewable_features)
+def create_co2_chart(hist_df, trump_df, baseline_df):
+    """Create CO2 comparison chart"""
+    fig = go.Figure()
     
-    subsidy_range = np.arange(0, 11, 1)
-    growth_range = np.arange(0, 11, 1)
+    # Calculate Historical CO2 (Approx)
+    hist_co2 = hist_df['Fossil_Usage'] * 53.0
     
-    result_matrix = np.zeros((len(growth_range), len(subsidy_range)))
+    fig.add_trace(go.Scatter(
+        x=hist_df['Year'], y=hist_co2,
+        name='Historical CO2', line=dict(color='gray', width=2)
+    ))
     
-    forecast_years = list(range(2025, target_year + 1))
+    fig.add_trace(go.Scatter(
+        x=trump_df['Year'], y=trump_df['CO2_Emissions'],
+        name='Trump 2.0 CO2', line=dict(color='#8B0000', width=3)
+    ))
     
-    for i, growth_rate in enumerate(growth_range):
-        for j, subsidy in enumerate(subsidy_range):
-            current_scenario = base_scenario.copy()
-            current_scenario['green_subsidy'] = subsidy
-            current_scenario['industrial_growth_rate'] = growth_rate
-            
-            renewable_value = _run_single_forecast(
-                _renewable_model, renewable_features,
-                last_row_dict, historical_subsidy,
-                current_scenario, forecast_years
-            )
-            
-            result_matrix[i, j] = renewable_value
+    fig.add_trace(go.Scatter(
+        x=baseline_df['Year'], y=baseline_df['CO2_Emissions'],
+        name='Baseline CO2', line=dict(color='#2E8B57', width=3, dash='dot')
+    ))
     
-    return result_matrix
-
-
-def _run_single_forecast(
-    model, features, last_row_dict, historical_subsidy,
-    scenario, forecast_years
-) -> float:
-    """Run single forecast (Helper) | 运行单次预测（辅助函数）"""
-    current_value = last_row_dict['Renewable_Usage']
-    renewable_lag = last_row_dict['Renewable_Usage']
-    current_year_index = int(last_row_dict['Year_Index'])
-    
-    last_gdp = last_row_dict['GDP']
-    last_industrial = last_row_dict['Industrial_Reshoring']
-    last_oil = last_row_dict['Oil_Price']
-    
-    current_intensity_lag = last_row_dict.get('Energy_Intensity', 
-        (last_row_dict['Fossil_Usage'] + last_row_dict['Renewable_Usage']) / last_gdp)
-    fossil_estimate = last_row_dict['Fossil_Usage']
-    
-    forecast_subsidy = {year: scenario['green_subsidy'] for year in forecast_years}
-    all_subsidy = {**historical_subsidy, **forecast_subsidy}
-    
-    for i, year in enumerate(forecast_years):
-        current_year_index += 1
-        
-        current_gdp = last_gdp * (1 + scenario['gdp_growth_rate'] / 100)
-        current_industrial = last_industrial * (1 + scenario['industrial_growth_rate'] / 100)
-        current_oil = last_oil * (1 + scenario['oil_price_change'] / 100)
-        
-        lcoe_improvement = scenario['lcoe_improvement_per_year'] * (i + 1)
-        current_lcoe = last_row_dict['LCOE_Advantage'] + lcoe_improvement
-        
-        lag2_year = year - 2
-        green_subsidy_lag2 = all_subsidy.get(lag2_year, scenario['green_subsidy'])
-        
-        feature_input = {
-            'GDP': current_gdp,
-            'Industrial_Reshoring': current_industrial,
-            'Oil_Price': current_oil,
-            'LCOE_Advantage': current_lcoe,
-            'Green_Subsidy_Index': scenario['green_subsidy'],
-            'Green_Subsidy_Lag2': green_subsidy_lag2,
-            'Permitting_Ease': scenario['permitting_ease'],
-            'Trade_Barrier': scenario['trade_barrier'],
-            'Year_Index': current_year_index,
-            'Energy_Intensity_Lag1': current_intensity_lag,
-            'Renewable_Lag1': renewable_lag
-        }
-        
-        X = pd.DataFrame([feature_input])[features]
-        diff_pred = model.predict(X)[0]
-        current_value = current_value + diff_pred
-        
-        renewable_lag = current_value
-        last_gdp = current_gdp
-        last_industrial = current_industrial
-        last_oil = current_oil
-        
-        total_energy_estimate = fossil_estimate + current_value
-        current_intensity_lag = total_energy_estimate / current_gdp
-    
-    return current_value
-
+    fig.update_layout(
+        title="Projected CO2 Emissions | 碳排放预测",
+        yaxis_title="Million Metric Tons CO2",
+        template='plotly_white', height=500
+    )
+    return fig
 
 # ============================================
 # Main Application | 主应用
 # ============================================
 
 def main():
-    st.title("⚡ US Energy Forecast Pro | 美国能源消费预测")
-    st.markdown("### Trump 2.0 Scenario Analysis")
+    st.title("⚡ US Energy Forecast Pro | 能源决策系统")
+    st.markdown("### Trump 2.0 vs Baseline Scenario Analysis")
     
     # Sidebar
-    st.sidebar.header("🎛️ Settings")
+    st.sidebar.header("🎛️ Trump 2.0 Settings")
     
     with st.sidebar.expander("Policy Scores | 政策评分", expanded=True):
-        green_subsidy = st.slider("Green Subsidy | 补贴", 0, 10, 3)
-        permitting_ease = st.slider("Permitting Ease | 审批", 0, 10, 9)
-        trade_barrier = st.slider("Trade Barrier | 关税", 0, 10, 9)
+        green_subsidy = st.slider("Green Subsidy | 补贴", 0, 10, 3, help="Trump 2.0: Likely cuts (Low)")
+        permitting_ease = st.slider("Fossil Permitting | 审批", 0, 10, 9, help="Trump 2.0: Deregulation (High)")
+        trade_barrier = st.slider("Trade Barrier | 关税", 0, 10, 9, help="Trump 2.0: High Tariffs")
     
-    with st.sidebar.expander("Macro Assumptions | 宏观假设", expanded=True):
+    with st.sidebar.expander("Macro Assumptions", expanded=True):
         gdp_growth = st.slider("GDP Growth (%)", -2.0, 5.0, 2.5)
         industrial_growth = st.slider("Industrial Growth (%)", -2.0, 10.0, 2.0)
-        oil_price_change = st.slider("Oil Price Change (%)", -20.0, 20.0, 3.0)
     
-    lcoe_improvement = st.sidebar.slider("LCOE Improvement", 0.0, 10.0, 2.0)
-    forecast_end = st.sidebar.selectbox("Forecast Until", [2026, 2028, 2030], index=1)
+    forecast_end = st.sidebar.selectbox("Forecast Until", [2028, 2030, 2035], index=1)
     
-    scenario_params = {
+    # 1. Define Scenarios
+    trump_params = {
         'green_subsidy': green_subsidy, 'permitting_ease': permitting_ease,
         'trade_barrier': trade_barrier, 'gdp_growth_rate': gdp_growth,
-        'industrial_growth_rate': industrial_growth, 'oil_price_change': oil_price_change,
-        'lcoe_improvement_per_year': lcoe_improvement
+        'industrial_growth_rate': industrial_growth, 'oil_price_change': 3.0,
+        'lcoe_improvement_per_year': 2.0
     }
     
-    # Execution
-    with st.spinner("Loading Data..."):
-        manual_df = load_manual_data()
-        macro_df = get_static_macro_data() 
-        merged_df = merge_all_data(manual_df, macro_df)
-        df = create_lag_features(merged_df)
+    # Baseline Scenario (Hidden Logic: Status Quo)
+    baseline_params = trump_params.copy()
+    baseline_params.update({
+        'green_subsidy': 8,      # Biden/Harris continues IRA
+        'permitting_ease': 4,    # Stricter regulations
+        'trade_barrier': 5       # Moderate protectionism
+    })
     
-    # Metrics
-    col1, col2 = st.columns(2)
-    col1.metric("2024 Fossil", f"{df['Fossil_Usage'].iloc[-1]:.1f} Q BTU")
-    col2.metric("2024 Renewable", f"{df['Renewable_Usage'].iloc[-1]:.1f} Q BTU")
+    # 2. Process Data
+    manual_df = load_manual_data()
+    macro_df = get_static_macro_data()
+    merged_df = merge_all_data(manual_df, macro_df)
+    df = create_lag_features(merged_df)
     
-    # Model & Forecast
+    # 3. Train & Forecast
     (f_model, r_model, f_feats, r_feats, f_rmse, r_rmse) = train_models(df)
-        
     forecast_years = list(range(2025, forecast_end + 1))
-    forecast_df = recursive_forecast(
-        f_model, r_model, f_feats, r_feats,
-        df.iloc[-1], df, scenario_params, forecast_years, f_rmse, r_rmse
+    
+    # Run Both Scenarios
+    trump_df = recursive_forecast(
+        f_model, r_model, f_feats, r_feats, df.iloc[-1], df, 
+        trump_params, forecast_years, f_rmse, r_rmse
+    )
+    baseline_df = recursive_forecast(
+        f_model, r_model, f_feats, r_feats, df.iloc[-1], df, 
+        baseline_params, forecast_years, f_rmse, r_rmse
     )
     
-    # Visualization
-    st.subheader("Forecast Results")
-    energy_type = st.radio("View", ['both', 'fossil', 'renewable'], horizontal=True)
-    st.plotly_chart(create_forecast_chart_with_ci(merged_df, forecast_df, energy_type), use_container_width=True)
+    # 4. Visualization Tabs
+    tab1, tab2, tab3 = st.tabs(["📊 Scenario Comparison", "🌍 CO2 Impact", "📋 Detailed Data"])
     
-    st.dataframe(forecast_df[['Year', 'Fossil_Usage', 'Renewable_Usage']].style.format("{:.2f}"), use_container_width=True)
-    
-    # Sensitivity Analysis - NOW AUTOMATIC (No Button)
-    st.markdown("---")
-    st.subheader("Sensitivity Analysis (Microscope Mode)")
-    
-    # 🟢 自动运行敏感性分析 (已移除按钮)
-    sens_matrix = calculate_sensitivity(
-        f_model, r_model, tuple(f_feats), tuple(r_feats),
-        tuple(df.iloc[-1].items()), 
-        tuple(df.set_index('Year')['Green_Subsidy_Index'].items()),
-        scenario_params
-    )
-    fig_hm, _, _, _ = create_sensitivity_heatmap(sens_matrix, 2028)
-    st.plotly_chart(fig_hm, use_container_width=True)
+    with tab1:
+        st.subheader("Renewable Energy Trajectory | 可再生能源轨迹对比")
+        st.caption("Comparison: User Settings (Trump 2.0) vs Baseline (Status Quo/Biden)")
+        
+        # Metrics Delta
+        col1, col2, col3 = st.columns(3)
+        t_final = trump_df['Renewable_Usage'].iloc[-1]
+        b_final = baseline_df['Renewable_Usage'].iloc[-1]
+        diff = t_final - b_final
+        
+        col1.metric(f"Trump 2.0 ({forecast_end})", f"{t_final:.2f} Q", f"{(t_final/8.7 -1)*100:.1f}% vs 2024")
+        col2.metric(f"Baseline ({forecast_end})", f"{b_final:.2f} Q", f"{(b_final/8.7 -1)*100:.1f}% vs 2024")
+        col3.metric("Policy Impact (Gap)", f"{diff:.2f} Q", delta_color="normal" if diff > 0 else "inverse")
+        
+        st.plotly_chart(create_comparison_chart(merged_df, trump_df, baseline_df), use_container_width=True)
+        
+        st.info("💡 **Insight**: The gap between the Red line (Trump) and Blue dotted line (Baseline) represents the direct impact of policy changes (Subsidies/Deregulation).")
 
-    # Feature Importance
-    st.markdown("---")
-    st.plotly_chart(create_feature_importance_chart(f_model, r_model, f_feats), use_container_width=True)
+    with tab2:
+        st.subheader("Environmental Impact Analysis | 环境影响分析")
+        st.plotly_chart(create_co2_chart(merged_df, trump_df, baseline_df), use_container_width=True)
+        
+        t_co2 = trump_df['CO2_Emissions'].sum()
+        b_co2 = baseline_df['CO2_Emissions'].sum()
+        extra_co2 = t_co2 - b_co2
+        
+        st.warning(f"⚠️ **Cumulative Impact**: Trump 2.0 scenario results in **{extra_co2/1000:.2f} Billion Tonnes** more CO2 compared to baseline over the forecast period.")
+
+    with tab3:
+        st.dataframe(trump_df[['Year', 'Fossil_Usage', 'Renewable_Usage', 'CO2_Emissions']].style.format("{:.2f}"), use_container_width=True)
 
 if __name__ == "__main__":
     main()
