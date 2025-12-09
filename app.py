@@ -16,6 +16,8 @@ import plotly.graph_objects as go
 from xgboost import XGBRegressor
 from sklearn.metrics import mean_squared_error
 import warnings
+import urllib.request
+from io import StringIO
 
 # 忽略警告信息
 warnings.filterwarnings('ignore')
@@ -47,7 +49,7 @@ def load_manual_data(filepath: str = "manual_data.csv") -> pd.DataFrame:
 def fetch_fred_data(start_year: int = 2000, end_year: int = 2024) -> pd.DataFrame:
     """
     Fetch macro data directly from FRED CSV API | 直接从FRED官网获取宏观经济数据
-    (More stable than pandas_datareader | 比 pandas_datareader 更稳定)
+    (Uses urllib with Browser Headers to bypass anti-bot blocking | 伪装浏览器头以绕过拦截)
     """
     try:
         # FRED Series IDs
@@ -58,42 +60,54 @@ def fetch_fred_data(start_year: int = 2000, end_year: int = 2024) -> pd.DataFram
         }
         
         macro_data = {}
+        fetch_success = False # 标记是否至少成功获取了一个数据
         
         for name, series_id in series_map.items():
             try:
-                # 直接构建 CSV 下载链接，避开库版本冲突
+                # 1. 构建 CSV 下载链接
                 url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
                 
-                # 读取 CSV
-                data = pd.read_csv(url, index_col='DATE', parse_dates=True)
+                # 2. 关键步骤：伪装成浏览器 (User-Agent)
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+                req = urllib.request.Request(url, headers=headers)
                 
-                # 筛选时间范围
+                # 3. 下载并读取数据
+                with urllib.request.urlopen(req) as response:
+                    csv_content = response.read().decode('utf-8')
+                
+                # 4. 解析 CSV
+                data = pd.read_csv(StringIO(csv_content), index_col='DATE', parse_dates=True)
+                
+                # 5. 筛选与重采样
                 data = data[data.index.year >= start_year]
-                
-                # 重采样为年度均值
                 annual_data = data.resample('YE').mean()
                 annual_data.index = annual_data.index.year
                 
-                # 存入字典
                 macro_data[name] = annual_data[series_id]
+                fetch_success = True
                 
             except Exception as e:
-                st.warning(f"Cannot fetch | 无法获取 {name} ({series_id}): {e}")
+                # 仅在后台记录警告，不中断程序
+                print(f"Warning: Cannot fetch {name}: {e}")
                 macro_data[name] = None
         
+        # 如果所有数据都获取失败，抛出异常以触发模拟数据
+        if not fetch_success:
+            raise ValueError("All FRED downloads failed (Blocked or Network Error)")
+
         # 合并数据
         df = pd.DataFrame(macro_data)
         df.index.name = 'Year'
         df = df.reset_index()
         
-        # 简单检查数据完整性
-        if df.isnull().all().all():
-            raise ValueError("All data fetch failed")
+        # 再次检查是否有全空列
+        if df['GDP'].isnull().all():
+             raise ValueError("GDP data is empty")
             
         return df
         
     except Exception as e:
-        st.warning(f"FRED data fetch failed, using mock data | FRED数据获取失败，使用模拟数据: {e}")
+        st.warning(f"Using Mock Data (Network/FRED Issue) | 使用模拟数据: {e}")
         return generate_mock_macro_data(start_year, end_year)
 
 
@@ -123,13 +137,11 @@ def generate_mock_macro_data(start_year: int, end_year: int) -> pd.DataFrame:
 
 def merge_all_data(manual_df: pd.DataFrame, macro_df: pd.DataFrame) -> pd.DataFrame:
     """Merge manual and macro data | 合并手动数据与宏观数据"""
-    # 确保 Year 列类型一致
     manual_df['Year'] = manual_df['Year'].astype(int)
     macro_df['Year'] = macro_df['Year'].astype(int)
     
     df = pd.merge(manual_df, macro_df, on='Year', how='inner')
     
-    # 填充缺失值
     numeric_cols = df.select_dtypes(include=[np.number]).columns
     df[numeric_cols] = df[numeric_cols].interpolate(method='linear')
     df[numeric_cols] = df[numeric_cols].ffill().bfill()
@@ -309,108 +321,6 @@ def recursive_forecast(
 
 
 # ============================================
-# Sensitivity Analysis | 敏感性分析
-# ============================================
-
-@st.cache_data
-def calculate_sensitivity(
-    _fossil_model, _renewable_model,
-    _fossil_features, _renewable_features,
-    _last_row_tuple, _historical_subsidy_tuple,
-    base_scenario, target_year=2028
-) -> np.ndarray:
-    """Calculate sensitivity matrix | 计算敏感性分析矩阵"""
-    last_row_dict = dict(_last_row_tuple)
-    historical_subsidy = dict(_historical_subsidy_tuple)
-    renewable_features = list(_renewable_features)
-    
-    subsidy_range = np.arange(0, 11, 1)
-    growth_range = np.arange(0, 11, 1)
-    
-    result_matrix = np.zeros((len(growth_range), len(subsidy_range)))
-    
-    forecast_years = list(range(2025, target_year + 1))
-    
-    for i, growth_rate in enumerate(growth_range):
-        for j, subsidy in enumerate(subsidy_range):
-            current_scenario = base_scenario.copy()
-            current_scenario['green_subsidy'] = subsidy
-            current_scenario['industrial_growth_rate'] = growth_rate
-            
-            renewable_value = _run_single_forecast(
-                _renewable_model, renewable_features,
-                last_row_dict, historical_subsidy,
-                current_scenario, forecast_years
-            )
-            
-            result_matrix[i, j] = renewable_value
-    
-    return result_matrix
-
-
-def _run_single_forecast(
-    model, features, last_row_dict, historical_subsidy,
-    scenario, forecast_years
-) -> float:
-    """Run single forecast | 运行单次预测"""
-    current_value = last_row_dict['Renewable_Usage']
-    renewable_lag = last_row_dict['Renewable_Usage']
-    current_year_index = int(last_row_dict['Year_Index'])
-    
-    last_gdp = last_row_dict['GDP']
-    last_industrial = last_row_dict['Industrial_Reshoring']
-    last_oil = last_row_dict['Oil_Price']
-    
-    current_intensity_lag = last_row_dict.get('Energy_Intensity', 
-        (last_row_dict['Fossil_Usage'] + last_row_dict['Renewable_Usage']) / last_gdp)
-    fossil_estimate = last_row_dict['Fossil_Usage']
-    
-    forecast_subsidy = {year: scenario['green_subsidy'] for year in forecast_years}
-    all_subsidy = {**historical_subsidy, **forecast_subsidy}
-    
-    for i, year in enumerate(forecast_years):
-        current_year_index += 1
-        
-        current_gdp = last_gdp * (1 + scenario['gdp_growth_rate'] / 100)
-        current_industrial = last_industrial * (1 + scenario['industrial_growth_rate'] / 100)
-        current_oil = last_oil * (1 + scenario['oil_price_change'] / 100)
-        
-        lcoe_improvement = scenario['lcoe_improvement_per_year'] * (i + 1)
-        current_lcoe = last_row_dict['LCOE_Advantage'] + lcoe_improvement
-        
-        lag2_year = year - 2
-        green_subsidy_lag2 = all_subsidy.get(lag2_year, scenario['green_subsidy'])
-        
-        feature_input = {
-            'GDP': current_gdp,
-            'Industrial_Reshoring': current_industrial,
-            'Oil_Price': current_oil,
-            'LCOE_Advantage': current_lcoe,
-            'Green_Subsidy_Index': scenario['green_subsidy'],
-            'Green_Subsidy_Lag2': green_subsidy_lag2,
-            'Permitting_Ease': scenario['permitting_ease'],
-            'Trade_Barrier': scenario['trade_barrier'],
-            'Year_Index': current_year_index,
-            'Energy_Intensity_Lag1': current_intensity_lag,
-            'Renewable_Lag1': renewable_lag
-        }
-        
-        X = pd.DataFrame([feature_input])[features]
-        diff_pred = model.predict(X)[0]
-        current_value = current_value + diff_pred
-        
-        renewable_lag = current_value
-        last_gdp = current_gdp
-        last_industrial = current_industrial
-        last_oil = current_oil
-        
-        total_energy_estimate = fossil_estimate + current_value
-        current_intensity_lag = total_energy_estimate / current_gdp
-    
-    return current_value
-
-
-# ============================================
 # Visualization | 可视化
 # ============================================
 
@@ -526,6 +436,108 @@ def create_feature_importance_chart(fossil_model, renewable_model, feature_names
 
 
 # ============================================
+# Sensitivity Analysis Logic | 敏感性分析逻辑
+# ============================================
+
+@st.cache_data
+def calculate_sensitivity(
+    _fossil_model, _renewable_model,
+    _fossil_features, _renewable_features,
+    _last_row_tuple, _historical_subsidy_tuple,
+    base_scenario, target_year=2028
+) -> np.ndarray:
+    """Calculate sensitivity matrix | 计算敏感性分析矩阵"""
+    last_row_dict = dict(_last_row_tuple)
+    historical_subsidy = dict(_historical_subsidy_tuple)
+    renewable_features = list(_renewable_features)
+    
+    subsidy_range = np.arange(0, 11, 1)
+    growth_range = np.arange(0, 11, 1)
+    
+    result_matrix = np.zeros((len(growth_range), len(subsidy_range)))
+    
+    forecast_years = list(range(2025, target_year + 1))
+    
+    for i, growth_rate in enumerate(growth_range):
+        for j, subsidy in enumerate(subsidy_range):
+            current_scenario = base_scenario.copy()
+            current_scenario['green_subsidy'] = subsidy
+            current_scenario['industrial_growth_rate'] = growth_rate
+            
+            renewable_value = _run_single_forecast(
+                _renewable_model, renewable_features,
+                last_row_dict, historical_subsidy,
+                current_scenario, forecast_years
+            )
+            
+            result_matrix[i, j] = renewable_value
+    
+    return result_matrix
+
+
+def _run_single_forecast(
+    model, features, last_row_dict, historical_subsidy,
+    scenario, forecast_years
+) -> float:
+    """Run single forecast (Helper) | 运行单次预测（辅助函数）"""
+    current_value = last_row_dict['Renewable_Usage']
+    renewable_lag = last_row_dict['Renewable_Usage']
+    current_year_index = int(last_row_dict['Year_Index'])
+    
+    last_gdp = last_row_dict['GDP']
+    last_industrial = last_row_dict['Industrial_Reshoring']
+    last_oil = last_row_dict['Oil_Price']
+    
+    current_intensity_lag = last_row_dict.get('Energy_Intensity', 
+        (last_row_dict['Fossil_Usage'] + last_row_dict['Renewable_Usage']) / last_gdp)
+    fossil_estimate = last_row_dict['Fossil_Usage']
+    
+    forecast_subsidy = {year: scenario['green_subsidy'] for year in forecast_years}
+    all_subsidy = {**historical_subsidy, **forecast_subsidy}
+    
+    for i, year in enumerate(forecast_years):
+        current_year_index += 1
+        
+        current_gdp = last_gdp * (1 + scenario['gdp_growth_rate'] / 100)
+        current_industrial = last_industrial * (1 + scenario['industrial_growth_rate'] / 100)
+        current_oil = last_oil * (1 + scenario['oil_price_change'] / 100)
+        
+        lcoe_improvement = scenario['lcoe_improvement_per_year'] * (i + 1)
+        current_lcoe = last_row_dict['LCOE_Advantage'] + lcoe_improvement
+        
+        lag2_year = year - 2
+        green_subsidy_lag2 = all_subsidy.get(lag2_year, scenario['green_subsidy'])
+        
+        feature_input = {
+            'GDP': current_gdp,
+            'Industrial_Reshoring': current_industrial,
+            'Oil_Price': current_oil,
+            'LCOE_Advantage': current_lcoe,
+            'Green_Subsidy_Index': scenario['green_subsidy'],
+            'Green_Subsidy_Lag2': green_subsidy_lag2,
+            'Permitting_Ease': scenario['permitting_ease'],
+            'Trade_Barrier': scenario['trade_barrier'],
+            'Year_Index': current_year_index,
+            'Energy_Intensity_Lag1': current_intensity_lag,
+            'Renewable_Lag1': renewable_lag
+        }
+        
+        X = pd.DataFrame([feature_input])[features]
+        diff_pred = model.predict(X)[0]
+        current_value = current_value + diff_pred
+        
+        renewable_lag = current_value
+        last_gdp = current_gdp
+        last_industrial = current_industrial
+        last_oil = current_oil
+        
+        total_energy_estimate = fossil_estimate + current_value
+        current_intensity_lag = total_energy_estimate / current_gdp
+    
+    return current_value
+
+
+# ============================================
 # Main Application | 主应用
 # ============================================
 
@@ -559,7 +571,7 @@ def main():
     # Execution
     with st.spinner("Loading Data..."):
         manual_df = load_manual_data()
-        macro_df = fetch_fred_data() # Now uses direct CSV download
+        macro_df = fetch_fred_data() # Updated robust fetcher
         merged_df = merge_all_data(manual_df, macro_df)
         df = create_lag_features(merged_df)
     
