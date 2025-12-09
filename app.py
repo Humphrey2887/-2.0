@@ -1,12 +1,10 @@
 """
-US Energy Consumption Forecast | 美国能源消费预测 - app.py (Static Data Version)
+US Energy Consumption Forecast | 美国能源消费预测 - app.py (Auto-Load Sensitivity Version)
 XGBoost Forecasting for Trump 2.0 Scenario | XGBoost预测 Trump 2.0情景分析
 
-Pro Features | 专业版功能:
-1. No External API Dependency | 无需外部API (内置真实历史数据，防止网络报错)
-2. Uncertainty Quantification | 不确定性量化
-3. Policy Lag Effects | 政策滞后效应
-4. Sensitivity Analysis | 敏感性分析
+Updates:
+- Sensitivity Analysis now runs automatically on page load (No button required).
+- 敏感性分析现在会自动运行，无需点击按钮。
 """
 
 import streamlit as st
@@ -48,23 +46,22 @@ def get_static_macro_data() -> pd.DataFrame:
     """
     Returns embedded REAL historical macro data (2000-2023).
     Bypasses FRED API blocking issues completely.
-    返回内置的真实历史宏观数据，彻底解决API被墙的问题。
     """
     data = {
         'Year': list(range(2000, 2024)),
-        # 真实美国GDP数据 (Billions USD) - Source: FRED/WorldBank
+        # 真实美国GDP数据 (Billions USD)
         'GDP': [
             10252, 10581, 10936, 11458, 12213, 13036, 13814, 14451, 14712, 14448, 
             14992, 15542, 16197, 16784, 17521, 18219, 18707, 19485, 20527, 21372, 
             20893, 22996, 25462, 27360
         ],
-        # 真实工业产出指数 (INDPRO, 2017=100) - Source: FRED
+        # 真实工业产出指数 (INDPRO, 2017=100)
         'Industrial_Reshoring': [
             92.8, 89.4, 89.7, 90.9, 93.3, 96.5, 98.6, 100.0, 96.3, 85.0, 
             90.6, 93.6, 96.6, 98.4, 101.3, 100.6, 99.4, 100.0, 103.1, 102.4, 
             95.4, 100.4, 103.7, 103.0
         ],
-        # 真实WTI原油价格 (DCOILWTICO) - Source: FRED
+        # 真实WTI原油价格 (DCOILWTICO)
         'Oil_Price': [
             30.3, 25.9, 26.1, 31.1, 41.4, 56.5, 66.1, 72.3, 99.6, 61.7, 
             79.4, 94.8, 94.1, 97.9, 93.1, 48.7, 43.2, 50.8, 65.2, 56.9, 
@@ -73,17 +70,18 @@ def get_static_macro_data() -> pd.DataFrame:
     }
     
     df = pd.DataFrame(data)
-    # 简单插值到2024 (假设值，避免缺失)
+    # 简单插值到2024
     last_row = df.iloc[-1].copy()
     last_row['Year'] = 2024
-    last_row['GDP'] = last_row['GDP'] * 1.025 # 2.5% growth estimate
+    last_row['GDP'] = last_row['GDP'] * 1.025
     last_row['Industrial_Reshoring'] = last_row['Industrial_Reshoring'] * 1.01
-    last_row['Oil_Price'] = 78.0 # 2024 estimate
+    last_row['Oil_Price'] = 78.0
     
     df = pd.concat([df, pd.DataFrame([last_row])], ignore_index=True)
     return df
 
 
+@st.cache_data
 def merge_all_data(manual_df: pd.DataFrame, macro_df: pd.DataFrame) -> pd.DataFrame:
     """Merge manual and macro data | 合并手动数据与宏观数据"""
     manual_df['Year'] = manual_df['Year'].astype(int)
@@ -98,6 +96,7 @@ def merge_all_data(manual_df: pd.DataFrame, macro_df: pd.DataFrame) -> pd.DataFr
     return df
 
 
+@st.cache_data
 def create_lag_features(df: pd.DataFrame) -> pd.DataFrame:
     """Create features | 创建特征"""
     df = df.copy()
@@ -124,9 +123,10 @@ def create_lag_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ============================================
-# Model Training & Forecasting | 模型训练与预测
+# Model Training (Cached for Speed) | 模型训练(缓存加速)
 # ============================================
 
+@st.cache_resource
 def train_models(df: pd.DataFrame) -> tuple:
     """Train XGBoost models | 训练模型"""
     feature_cols = ['GDP', 'Industrial_Reshoring', 'Oil_Price', 
@@ -150,7 +150,8 @@ def train_models(df: pd.DataFrame) -> tuple:
         'subsample': 0.8,
         'colsample_bytree': 0.8,
         'random_state': 42,
-        'objective': 'reg:squarederror'
+        'objective': 'reg:squarederror',
+        'n_jobs': 1
     }
     
     fossil_model = XGBRegressor(**xgb_params)
@@ -385,7 +386,7 @@ def create_feature_importance_chart(fossil_model, renewable_model, feature_names
 
 
 # ============================================
-# Sensitivity Analysis Logic | 敏感性分析逻辑
+# Sensitivity Analysis Logic (Cached) | 敏感性分析逻辑
 # ============================================
 
 @st.cache_data
@@ -520,7 +521,6 @@ def main():
     # Execution
     with st.spinner("Loading Data..."):
         manual_df = load_manual_data()
-        # 🟢 CRITICAL CHANGE: Using static data to avoid FRED blocking
         macro_df = get_static_macro_data() 
         merged_df = merge_all_data(manual_df, macro_df)
         df = create_lag_features(merged_df)
@@ -531,14 +531,13 @@ def main():
     col2.metric("2024 Renewable", f"{df['Renewable_Usage'].iloc[-1]:.1f} Q BTU")
     
     # Model & Forecast
-    with st.spinner("Training & Forecasting..."):
-        (f_model, r_model, f_feats, r_feats, f_rmse, r_rmse) = train_models(df)
+    (f_model, r_model, f_feats, r_feats, f_rmse, r_rmse) = train_models(df)
         
-        forecast_years = list(range(2025, forecast_end + 1))
-        forecast_df = recursive_forecast(
-            f_model, r_model, f_feats, r_feats,
-            df.iloc[-1], df, scenario_params, forecast_years, f_rmse, r_rmse
-        )
+    forecast_years = list(range(2025, forecast_end + 1))
+    forecast_df = recursive_forecast(
+        f_model, r_model, f_feats, r_feats,
+        df.iloc[-1], df, scenario_params, forecast_years, f_rmse, r_rmse
+    )
     
     # Visualization
     st.subheader("Forecast Results")
@@ -547,19 +546,19 @@ def main():
     
     st.dataframe(forecast_df[['Year', 'Fossil_Usage', 'Renewable_Usage']].style.format("{:.2f}"), use_container_width=True)
     
-    # Sensitivity
+    # Sensitivity Analysis - NOW AUTOMATIC (No Button)
     st.markdown("---")
     st.subheader("Sensitivity Analysis (Microscope Mode)")
-    if st.button("Run Sensitivity Analysis"):
-        with st.spinner("Simulating..."):
-            sens_matrix = calculate_sensitivity(
-                f_model, r_model, tuple(f_feats), tuple(r_feats),
-                tuple(df.iloc[-1].items()), 
-                tuple(df.set_index('Year')['Green_Subsidy_Index'].items()),
-                scenario_params
-            )
-            fig_hm, _, _, _ = create_sensitivity_heatmap(sens_matrix, 2028)
-            st.plotly_chart(fig_hm, use_container_width=True)
+    
+    # 🟢 自动运行敏感性分析 (已移除按钮)
+    sens_matrix = calculate_sensitivity(
+        f_model, r_model, tuple(f_feats), tuple(r_feats),
+        tuple(df.iloc[-1].items()), 
+        tuple(df.set_index('Year')['Green_Subsidy_Index'].items()),
+        scenario_params
+    )
+    fig_hm, _, _, _ = create_sensitivity_heatmap(sens_matrix, 2028)
+    st.plotly_chart(fig_hm, use_container_width=True)
 
     # Feature Importance
     st.markdown("---")
