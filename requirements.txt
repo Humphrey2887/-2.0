@@ -1,7 +1,7 @@
 streamlit
-pandas==1.5.3
+pandas
 numpy
 plotly
 scikit-learn
 xgboost
-pandas-datareader
+yfinance
