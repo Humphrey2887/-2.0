@@ -19,7 +19,6 @@ import warnings
 
 # 忽略警告信息
 warnings.filterwarnings('ignore')
-st.set_option('deprecation.showPyplotGlobalUse', False) # 允许SHAP绘图
 
 # Page Configuration
 st.set_page_config(
@@ -271,9 +270,15 @@ def plot_shap_summary(model, X):
     """Generates SHAP Summary Plot"""
     explainer = shap.TreeExplainer(model)
     shap_values = explainer.shap_values(X)
+    
+    # 创建一个新的 matplotlib 图形对象
     fig, ax = plt.subplots()
+    
+    # 关键修改：加上 show=False，防止直接弹窗，而是画在当前的 fig 上
     shap.summary_plot(shap_values, X, show=False, plot_type="bar")
-    return plt.gcf()
+    
+    # 显式返回这个 fig 对象
+    return fig
 
 # ============================================
 # Chart Helpers
