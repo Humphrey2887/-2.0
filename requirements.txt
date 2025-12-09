@@ -1,8 +1,6 @@
 streamlit
 pandas
-pandas-datareader
-xgboost
-scikit-learn
 numpy
-matplotlib
-lxml
+plotly
+scikit-learn
+xgboost
